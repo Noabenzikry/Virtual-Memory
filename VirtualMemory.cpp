@@ -27,10 +27,14 @@ void VMinitialize() {
 }
 
 
-void updateFrameDetails(word_t currentFrame, uint64_t targetPage, uint64_t curPath,
-                        word_t &maxFrame, word_t &evictPage, word_t &evictFrame, word_t &maxDistance) {
+void updateFrameDetails(uint64_t targetPage,
+						uint64_t curPath, word_t currentFrame,
+                        word_t &maxFrame, word_t &evictPage,
+						word_t &evictFrame, word_t &maxDistance) {
+	
   maxFrame = std::max(maxFrame, currentFrame);
   word_t distance = cyclic_distance(static_cast<word_t>(targetPage), static_cast<word_t>(curPath));
+  
   if (distance > maxDistance) {
     maxDistance = distance;
     evictPage = static_cast<word_t>(curPath);
@@ -38,26 +42,35 @@ void updateFrameDetails(word_t currentFrame, uint64_t targetPage, uint64_t curPa
   }
 }
 
-void traverseFrames(int depth, uint64_t targetPage, word_t curFrame, word_t parentFrame,
-                    word_t &maxFrame, word_t &evictPage, word_t &evictFrame, word_t &maxDistance,
-                    word_t &freeFrame, bool &foundFreeFrame, uint64_t curPath) {
+void traverseFrames(int depth, uint64_t targetPage,
+					uint64_t curPath, word_t curFrame, word_t parentFrame,
+                    word_t &maxFrame, word_t &evictPage, word_t &evictFrame,
+					word_t &maxDistance,word_t &freeFrame, bool &foundFreeFrame) {
 
   if (depth == TABLES_DEPTH) {
-    updateFrameDetails(curFrame, targetPage, curPath, maxFrame, evictPage, evictFrame, maxDistance);
+    updateFrameDetails(targetPage, curPath,
+					   curFrame, maxFrame,
+					   evictPage, evictFrame,
+					   maxDistance);
     return;
   }
 
   bool hasNonEmptyChild = false;
+  uint64_t curPath_ofs = curPath << OFFSET_WIDTH;
+  word_t childFrame;
+  
   for (int slot = 0; slot < PAGE_SIZE; ++slot) {
-    word_t childFrame = 0;
-    uint64_t address = curFrame * PAGE_SIZE + slot;
-    PMread(address, &childFrame);
+    childFrame = 0;
+    PMread(curFrame * PAGE_SIZE + slot, &childFrame);
 
     if (childFrame != 0) {
       hasNonEmptyChild = true;
-      uint64_t nextPath = (curPath << OFFSET_WIDTH) | slot;
-      traverseFrames (depth
-                      + 1, targetPage, childFrame, parentFrame, maxFrame, evictPage, evictFrame, maxDistance, freeFrame, foundFreeFrame, nextPath);
+      traverseFrames (depth+ 1, targetPage,
+					  curPath_ofs + slot,
+					  childFrame, parentFrame,
+					  maxFrame, evictPage,
+					  evictFrame, maxDistance,
+					  freeFrame, foundFreeFrame);
     }
   }
 
@@ -73,21 +86,24 @@ void traverseFrames(int depth, uint64_t targetPage, word_t curFrame, word_t pare
 
 
 void evictFrame(word_t targetFrame, word_t curFrame, int currentDepth, bool &targetFound) {
-  if (currentDepth == TABLES_DEPTH) {
+	
+	
+  if (currentDepth == TABLES_DEPTH || targetFound) {
     return; // Base case: reached the deepest level
   }
-
+  
+  uint64_t frame = curFrame * PAGE_SIZE;
+  word_t childFrame;
   for (int i = 0; i < PAGE_SIZE; ++i) {
-    word_t childFrame;
-    uint64_t address = curFrame * PAGE_SIZE + i;
-    PMread(address, &childFrame);
+    PMread(frame + i, &childFrame);
 
     if (childFrame == targetFrame) {
       // If the target frame is found, clear it and mark it as found
-      PMwrite(address, 0);
+      PMwrite(frame + i, 0);
       targetFound = true;
       return;
-    } else if (childFrame != 0) {
+	  
+    }else if (childFrame != 0) {
       // If there is a non-zero child, continue searching
       evictFrame(targetFrame, childFrame, currentDepth + 1, targetFound);
       if (targetFound) {
@@ -113,26 +129,33 @@ void allocateAndInitFrame(uint64_t virtualAddress, uint64_t currFrame, word_t &f
   word_t maxDist = 0;
 
   // Traverse frames and find a free frame or determine which frame to evict
-  traverseFrames(0, virtualAddress >> OFFSET_WIDTH, 0, frameIndex, highestFrame, evictPage, maxFrame, maxDist, freeFrame, foundFreeFrame, 0);
+  traverseFrames(0, virtualAddress >> OFFSET_WIDTH,
+				 0, 0, frameIndex,
+				 highestFrame, evictPage,
+				 maxFrame, maxDist,
+				 freeFrame, foundFreeFrame);
 
   // If a free frame was found, allocate it
   if (foundFreeFrame) {
     frameIndex = freeFrame;
     bool targetFound = false;
+	
     evictFrame(freeFrame, 0, 0, targetFound);
     clearFrame(freeFrame); // Initialize the new frame
+	
   } else {
     // If no free frame is available, use the highest frame or evict
     if (highestFrame < NUM_FRAMES - 1) {
       frameIndex = highestFrame + 1;
-      clearFrame(frameIndex); // Initialize the new frame
     } else {
       PMevict(maxFrame, evictPage);
+	  
       bool targetFound = false;
       evictFrame(maxFrame, 0, 0, targetFound);
       frameIndex = maxFrame;
-      clearFrame(frameIndex); // Initialize the new frame
-    }
+	}
+	
+	clearFrame(frameIndex);
   }
 
   PMwrite(currFrame, frameIndex);
@@ -161,6 +184,7 @@ uint64_t convertAddress(uint64_t virtualAddress) {
   PMrestore(frameIndex, virtualAddress >> OFFSET_WIDTH);
   uint64_t pageOffset = virtualAddress % ((1ULL << OFFSET_WIDTH));
   uint64_t physicalAddress = frameIndex * PAGE_SIZE + pageOffset;
+  
   return physicalAddress;
 }
 
